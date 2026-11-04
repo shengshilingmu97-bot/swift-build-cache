@@ -1,0 +1,27 @@
+name: Build and Test
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sw_vers && uname -m
+
+      - name: arm64 baseline
+        run: |
+          clang -fobjc-arc -framework Foundation -framework CoreFoundation -o /tmp/test_a64 timer_perf_test.m
+          echo "=== arm64 (PAC NOP) ==="
+          /tmp/test_a64
+        continue-on-error: true
+
+      - name: arm64e PAC enforced
+        run: |
+          clang -arch arm64e -fobjc-arc -framework Foundation -framework CoreFoundation -o /tmp/test_a64e timer_perf_test.m
+          echo "=== arm64e (PAC ENFORCED) ==="
+          /tmp/test_a64e
+        continue-on-error: true
