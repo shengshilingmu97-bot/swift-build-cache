@@ -12,16 +12,30 @@ jobs:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
 
-      - name: arm64 baseline
+      - name: arg forward scan (arm64)
         run: |
-          clang -fobjc-arc -framework Foundation -framework CoreFoundation -o /tmp/test_a64 timer_perf_test.m
-          echo "=== arm64 (PAC NOP) ==="
-          /tmp/test_a64
+          clang -fobjc-arc -framework Foundation -framework CoreFoundation -framework Security -ldl -o /tmp/afs_a64 arg_forward_scan.m
+          echo "=== arm64 ==="
+          /tmp/afs_a64
         continue-on-error: true
 
-      - name: arm64e PAC enforced
+      - name: arg forward scan (arm64e)
         run: |
-          clang -arch arm64e -fobjc-arc -framework Foundation -framework CoreFoundation -o /tmp/test_a64e timer_perf_test.m
-          echo "=== arm64e (PAC ENFORCED) ==="
-          /tmp/test_a64e
+          clang -arch arm64e -fobjc-arc -framework Foundation -framework CoreFoundation -framework Security -ldl -o /tmp/afs_a64e arg_forward_scan.m
+          echo "=== arm64e ==="
+          /tmp/afs_a64e
+        continue-on-error: true
+
+      - name: exception bench (arm64)
+        run: |
+          clang++ -arch arm64 -fobjc-arc -fcxx-exceptions -framework Foundation -lc++abi -ldl -o /tmp/exc_a64 exception_bench.mm
+          echo "=== arm64 ==="
+          /tmp/exc_a64
+        continue-on-error: true
+
+      - name: exception bench (arm64e)
+        run: |
+          clang++ -arch arm64e -fobjc-arc -fcxx-exceptions -framework Foundation -lc++abi -ldl -o /tmp/exc_a64e exception_bench.mm
+          echo "=== arm64e ==="
+          /tmp/exc_a64e
         continue-on-error: true
