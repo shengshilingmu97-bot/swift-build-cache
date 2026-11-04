@@ -51,7 +51,7 @@ typedef struct {
     int insns_to_branch;
 } trampoline_hit_t;
 
-#define MAX_HITS 200
+#define MAX_HITS 500
 static trampoline_hit_t g_hits[MAX_HITS];
 static int g_nhits = 0;
 
@@ -322,8 +322,28 @@ int main(void) {
 
         printf("  Total hits: %d\n\n", g_nhits);
 
+        /* Check for dangerous targets first */
+        printf("--- *** DANGEROUS TARGETS (system/exec/popen/dlopen) *** ---\n");
+        const char *dangerous[] = {"system", "execv", "execve", "execl",
+            "popen", "dlopen", "posix_spawn", "NSTask", "fork", "vfork"};
+        int ndangerous = sizeof(dangerous)/sizeof(dangerous[0]);
+        int found_dangerous = 0;
+        for (int i = 0; i < g_nhits; i++) {
+            if (!g_hits[i].branch_target) continue;
+            for (int d = 0; d < ndangerous; d++) {
+                if (strcasestr(g_hits[i].branch_target, dangerous[d])) {
+                    printf("  *** %s +%d %s → %s [%s] ***\n",
+                           g_hits[i].func_name, g_hits[i].offset,
+                           g_hits[i].branch_type, g_hits[i].branch_target,
+                           g_hits[i].lib_name);
+                    found_dangerous++;
+                }
+            }
+        }
+        if (!found_dangerous) printf("  (none found)\n");
+
         /* Print results sorted by relevance */
-        printf("--- Direct tail-calls (B/BL with known target) ---\n");
+        printf("\n--- Direct tail-calls (B/BL with known target) ---\n");
         for (int i = 0; i < g_nhits; i++) {
             if ((strcmp(g_hits[i].branch_type, "B") == 0 ||
                  strcmp(g_hits[i].branch_type, "BL") == 0) &&

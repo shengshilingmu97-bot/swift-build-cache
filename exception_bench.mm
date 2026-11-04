@@ -47,7 +47,9 @@ typedef struct {
 
 static func_pac_stats_t scan_function_pac(void *func_addr, int max_insns) {
     func_pac_stats_t s = {0};
-    const uint32_t *insns = (const uint32_t *)func_addr;
+    /* Strip PAC before reading instructions (dlsym returns signed pointers on arm64e) */
+    uint64_t stripped_addr = strip_pac((uint64_t)func_addr);
+    const uint32_t *insns = (const uint32_t *)stripped_addr;
 
     for (int i = 0; i < max_insns; i++) {
         uint32_t w = insns[i];
@@ -155,7 +157,11 @@ static void analyze_exception_object(void) {
 
             Dl_info dli = {0};
             int is_code = 0;
-            if (stripped > 0x100000000ull && stripped < 0x800000000000ull) {
+            if (stripped > 0x100000000ull && stripped < 0x800000000000ull &&
+                stripped == val) {
+                /* Only dladdr on non-PAC-signed values to avoid SEGFAULT on arm64e */
+                is_code = dladdr((void *)stripped, &dli) && dli.dli_sname;
+            } else if (stripped > 0x100000000ull && stripped < 0x800000000000ull) {
                 is_code = dladdr((void *)stripped, &dli) && dli.dli_sname;
             }
 
@@ -216,7 +222,7 @@ static void analyze_unwind_dispatch(void) {
 
     if (unwind_resume) {
         printf("  --- _Unwind_Resume detailed scan ---\n");
-        const uint32_t *insns = (const uint32_t *)unwind_resume;
+        const uint32_t *insns = (const uint32_t *)strip_pac((uint64_t)unwind_resume);
         int found_end = 0;
         for (int i = 0; i < 200 && !found_end; i++) {
             uint32_t w = insns[i];
@@ -252,7 +258,7 @@ static void analyze_unwind_dispatch(void) {
     /* Also scan _Unwind_RaiseException for personality routine dispatch */
     if (unwind_raise) {
         printf("\n  --- _Unwind_RaiseException indirect branches ---\n");
-        const uint32_t *insns = (const uint32_t *)unwind_raise;
+        const uint32_t *insns = (const uint32_t *)strip_pac((uint64_t)unwind_raise);
         for (int i = 0; i < 300; i++) {
             uint32_t w = insns[i];
             if (IS_BR(w) && !IS_BRAA(w)) {
