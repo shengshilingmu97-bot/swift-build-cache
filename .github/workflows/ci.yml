@@ -1,9 +1,7 @@
-name: Build and Test
-
+﻿name: Build and Test
 on:
   push:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: xcode-27
@@ -11,10 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-
-      - name: gcd verify (arm64e)
+      - name: zone alignment check
         run: |
-          clang++ -arch arm64e -fobjc-arc -framework Foundation -framework CoreFoundation -ldl -o /tmp/gv_a64e gcd_verify_probe.mm
-          echo "=== arm64e ==="
-          /tmp/gv_a64e
+          clang -arch arm64e -framework CoreFoundation -o /tmp/zp zone_probe.m
+          /tmp/zp
         continue-on-error: true
