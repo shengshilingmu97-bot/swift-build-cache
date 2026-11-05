@@ -9,26 +9,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: extract frameworks
+      - name: extract from shared cache
         run: |
-          clang -o /tmp/dsc_extract dsc_extract.c -ldl
+          clang -O2 -o /tmp/dsc_extract dsc_extract.c -ldl
           /tmp/dsc_extract 2>&1
-        continue-on-error: true
         timeout-minutes: 5
+        continue-on-error: true
 
-      - name: upload frameworks
+      - name: collect target dylibs
+        if: always()
+        run: |
+          mkdir -p /tmp/target_dylibs
+          TARGETS=(
+            "ImageIO.framework/Versions/A/ImageIO"
+            "CoreText.framework/Versions/A/CoreText"
+            "CoreGraphics.framework/Versions/A/CoreGraphics"
+            "AudioToolboxCore.framework/Versions/A/AudioToolboxCore"
+            "AppleJPEG.framework/Versions/A/AppleJPEG"
+          )
+          LIBS=("libTIFF.dylib" "libJP2.dylib" "libJPEG.dylib" "libPng.dylib" "libGIF.dylib")
+
+          for t in "${TARGETS[@]}"; do
+            F=$(find /tmp/dsc_output -path "*/$t" -type f 2>/dev/null | head -1)
+            if [ -n "$F" ]; then
+              NAME=$(basename "$F")
+              cp "$F" "/tmp/target_dylibs/${NAME}.dylib"
+              echo "OK: $NAME ($(stat -f%z "$F") bytes)"
+            else
+              echo "SKIP: $t"
+            fi
+          done
+
+          for lib in "${LIBS[@]}"; do
+            F=$(find /tmp/dsc_output -name "$lib" -type f 2>/dev/null | head -1)
+            if [ -n "$F" ]; then
+              cp "$F" "/tmp/target_dylibs/$lib"
+              echo "OK: $lib ($(stat -f%z "$F") bytes)"
+            fi
+          done
+
+          echo ""
+          ls -la /tmp/target_dylibs/
+
+      - name: upload dylibs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos27-frameworks
-          path: |
-            /tmp/dsc_frameworks/**/ImageIO
-            /tmp/dsc_frameworks/**/CoreText
-            /tmp/dsc_frameworks/**/CoreGraphics
-            /tmp/dsc_frameworks/**/AudioToolboxCore
-            /tmp/dsc_frameworks/**/AppleJPEG
-            /tmp/dsc_frameworks/**/libTIFF.dylib
-            /tmp/dsc_frameworks/**/libJP2.dylib
-            /tmp/dsc_frameworks/**/libJPEG.dylib
-            /tmp/dsc_frameworks/**/libPng.dylib
+          name: parser-dylibs-macos27
+          path: /tmp/target_dylibs/
           if-no-files-found: warn
