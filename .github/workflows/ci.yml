@@ -9,8 +9,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: zone alignment check
+      - name: transform dispatch analysis
         run: |
-          clang -arch arm64e -framework CoreFoundation -o /tmp/zp zone_probe.m
-          /tmp/zp
+          clang -arch arm64e -framework Security -framework CoreFoundation -Wno-deprecated-declarations -o /tmp/ta transform_analysis.m
+          /tmp/ta 2>&1
         continue-on-error: true
+        timeout-minutes: 2
