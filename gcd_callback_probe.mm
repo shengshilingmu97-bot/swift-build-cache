@@ -168,7 +168,7 @@ static void probe_gcd_dispatch(void) {
 
     /* Scan the queue object for our function pointers and context */
     printf("\n  Queue object scan (first 64 qwords):\n");
-    uint64_t *qraw = (uint64_t *)(void *)q;
+    uint64_t *qraw = (uint64_t *)(__bridge void *)q;
     for (int i = 0; i < 64; i++) {
         uint64_t val = qraw[i];
         uint64_t stripped = strip_pac(val);
