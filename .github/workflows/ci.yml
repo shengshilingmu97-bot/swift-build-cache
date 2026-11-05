@@ -9,8 +9,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: otool symbol analysis
+      - name: extract from shared cache
         run: |
-          chmod +x otool_analysis.sh
-          bash otool_analysis.sh 2>&1
+          clang -o /tmp/dsc_extract dsc_extract.c -ldl
+          /tmp/dsc_extract 2>&1
         continue-on-error: true
+
+      - name: analyze extracted dylibs
+        if: always()
+        run: |
+          echo "=== nm on extracted ImageIO ==="
+          find /tmp/dsc_out -name "ImageIO" -exec nm -U {} \; 2>/dev/null | \
+            grep -iE "decode|parse|read|scan|jpeg|tiff|png|heif|validate|header|size|alloc" | head -80
+          echo ""
+          echo "=== nm on extracted CoreText ==="
+          find /tmp/dsc_out -name "CoreText" -exec nm -U {} \; 2>/dev/null | \
+            grep -iE "font|glyph|cmap|sfnt|table|parse|read|validate|size" | head -80
+          echo ""
+          echo "=== nm on extracted CoreGraphics ==="
+          find /tmp/dsc_out -name "CoreGraphics" -exec nm -U {} \; 2>/dev/null | \
+            grep -iE "pdf|icc|color|parse|scan|stream|read|validate" | head -80
+          echo ""
+          echo "=== nm on extracted libTIFF ==="
+          find /tmp/dsc_out -name "libTIFF.dylib" -exec nm -U {} \; 2>/dev/null | head -80
+        continue-on-error: true
+
+      - name: upload extracted dylibs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsc-extracted
+          path: /tmp/dsc_out/
+          if-no-files-found: warn
