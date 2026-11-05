@@ -9,9 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: transform dispatch analysis
+      - name: disassembly probe
         run: |
-          clang -arch arm64e -framework Security -framework CoreFoundation -Wno-deprecated-declarations -o /tmp/ta transform_analysis.m
-          /tmp/ta 2>&1
+          clang -arch arm64e -framework Security -framework CoreFoundation -Wno-deprecated-declarations -ldl -o /tmp/dp disasm_probe.m
+          /tmp/dp 2>&1
         continue-on-error: true
-        timeout-minutes: 2
