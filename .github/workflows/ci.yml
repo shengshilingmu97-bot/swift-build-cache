@@ -12,9 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
 
-      - name: gcd callback probe (arm64e)
+      - name: gcd verify (arm64e)
         run: |
-          clang++ -arch arm64e -fobjc-arc -fcxx-exceptions -framework Foundation -lobjc -ldl -o /tmp/gc_a64e gcd_callback_probe.mm
+          clang++ -arch arm64e -fobjc-arc -framework Foundation -framework CoreFoundation -ldl -o /tmp/gv_a64e gcd_verify_probe.mm
           echo "=== arm64e ==="
-          /tmp/gc_a64e
+          /tmp/gv_a64e
         continue-on-error: true
