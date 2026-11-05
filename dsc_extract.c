@@ -1,6 +1,8 @@
 /*
- * dsc_extract.c — Extract dylibs from dyld shared cache via dsc_extractor API
+ * dsc_extract.c — Extract specific dylibs from shared cache
  * benchmark-id: LRK-7
+ *
+ * Uses dsc_extractor.bundle API (same method as previous Security.dylib extraction)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,89 +14,131 @@
 typedef int (*dsc_extractor_fn)(const char *cache_path, const char *output_dir,
                                 void (*progress)(unsigned, unsigned));
 
+static unsigned g_total = 0;
 static void progress_cb(unsigned current, unsigned total) {
-    if (current % 100 == 0 || current == total)
-        fprintf(stderr, "\r  Extracting: %u / %u", current, total);
+    g_total = total;
+    if (current % 200 == 0 || current == total)
+        fprintf(stderr, "\r  %u / %u dylibs", current, total);
 }
 
-int main(int argc, char **argv) {
-    printf("=== dsc_extractor dylib extraction (LRK-7) ===\n\n");
+int main(void) {
+    printf("=== Shared cache dylib extraction ===\n\n");
 
-    /* Find the shared cache */
-    const char *cache_paths[] = {
-        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
-        "/System/Library/dyld/dyld_shared_cache_arm64e",
+    /* 1. Find all shared cache files */
+    printf("--- Shared cache search ---\n");
+    const char *dirs[] = {
+        "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld",
+        "/System/Library/dyld",
+        "/private/var/db/dyld",
         NULL
     };
 
-    const char *cache = NULL;
-    for (int i = 0; cache_paths[i]; i++) {
-        struct stat st;
-        if (stat(cache_paths[i], &st) == 0) {
-            cache = cache_paths[i];
-            printf("Cache: %s (%lld bytes)\n", cache, (long long)st.st_size);
-            break;
+    for (int d = 0; dirs[d]; d++) {
+        DIR *dp = opendir(dirs[d]);
+        if (!dp) continue;
+        struct dirent *de;
+        while ((de = readdir(dp))) {
+            if (strstr(de->d_name, "dyld_shared_cache")) {
+                char path[512];
+                snprintf(path, sizeof(path), "%s/%s", dirs[d], de->d_name);
+                struct stat st;
+                stat(path, &st);
+                printf("  %s (%lld bytes)\n", path, (long long)st.st_size);
+            }
         }
+        closedir(dp);
     }
 
-    if (!cache) {
-        /* Try to find ANY shared cache */
-        printf("Standard paths not found. Searching...\n");
-        system("find /System/Volumes -name 'dyld_shared_cache_arm64e*' -ls 2>/dev/null | head -5");
-        system("find /private/var/db/dyld -name 'dyld_shared_cache_arm64e*' -ls 2>/dev/null | head -5");
+    /* 2. Try dsc_extractor.bundle */
+    printf("\n--- Loading dsc_extractor ---\n");
+    void *handle = dlopen("/usr/lib/dsc_extractor.bundle", RTLD_NOW);
+    if (!handle) {
+        /* Try alternative paths */
+        const char *alt[] = {
+            "/usr/lib/dsc_extractor.bundle",
+            "/System/Library/PrivateFrameworks/DyldSharedCache.framework/Versions/A/DyldSharedCache",
+            NULL
+        };
+        for (int i = 0; alt[i] && !handle; i++)
+            handle = dlopen(alt[i], RTLD_NOW);
+    }
+
+    if (!handle) {
+        printf("dsc_extractor not available: %s\n", dlerror());
+        printf("\nFallback: listing dyld_info for target frameworks...\n");
+        system("xcrun dyld_info -platform /System/Library/Frameworks/ImageIO.framework/ImageIO 2>&1 | head -5");
+        system("xcrun dyld_info -platform /System/Library/Frameworks/CoreText.framework/CoreText 2>&1 | head -5");
         return 1;
     }
 
-    /* Load dsc_extractor */
-    void *handle = dlopen("/usr/lib/dsc_extractor.bundle", RTLD_NOW);
-    if (!handle) {
-        printf("dsc_extractor.bundle not found, trying libdsc_extractor.dylib...\n");
-        handle = dlopen("libdsc_extractor.dylib", RTLD_NOW);
-    }
-    if (!handle) {
-        printf("No dsc_extractor available. Trying dyld_shared_cache_util...\n");
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd),
-            "dyld_shared_cache_util -list '%s' 2>/dev/null | "
-            "grep -iE 'ImageIO|CoreText|CoreGraphics|AudioToolbox|AppleJPEG|libTIFF|libJP2|libJPEG|libPng' | head -20",
-            cache);
-        system(cmd);
+    printf("  Loaded: %p\n", handle);
 
-        /* Try extraction with dyld_shared_cache_util */
-        printf("\nAttempting extraction...\n");
-        snprintf(cmd, sizeof(cmd),
-            "mkdir -p /tmp/dsc_out && dyld_shared_cache_util -extract /tmp/dsc_out '%s' 2>&1 | tail -5",
-            cache);
-        system(cmd);
-
-        /* Check what was extracted */
-        printf("\nExtracted frameworks:\n");
-        system("find /tmp/dsc_out -name 'ImageIO' -o -name 'CoreText' -o -name 'CoreGraphics' "
-               "-o -name 'AudioToolboxCore' -o -name 'libTIFF.dylib' -o -name 'libJP2.dylib' "
-               "-o -name 'AppleJPEG' 2>/dev/null | head -20");
-        return 0;
+    /* List available symbols */
+    const char *sym_names[] = {
+        "dyld_shared_cache_extract_dylibs_progress",
+        "dyld_shared_cache_extract_dylibs",
+        NULL
+    };
+    dsc_extractor_fn extract = NULL;
+    for (int i = 0; sym_names[i]; i++) {
+        void *sym = dlsym(handle, sym_names[i]);
+        printf("  %s: %p\n", sym_names[i], sym);
+        if (sym && !extract) extract = (dsc_extractor_fn)sym;
     }
 
-    dsc_extractor_fn extract = (dsc_extractor_fn)dlsym(handle, "dyld_shared_cache_extract_dylibs_progress");
     if (!extract) {
-        printf("dyld_shared_cache_extract_dylibs_progress not found\n");
+        printf("No extraction function found\n");
         dlclose(handle);
         return 1;
     }
 
-    const char *outdir = "/tmp/dsc_out";
+    /* 3. Extract from the main cache */
+    const char *cache = "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e";
+    struct stat st;
+    if (stat(cache, &st) != 0) {
+        cache = "/System/Library/dyld/dyld_shared_cache_arm64e";
+        if (stat(cache, &st) != 0) {
+            printf("No shared cache found\n");
+            return 1;
+        }
+    }
+
+    const char *outdir = "/tmp/dsc_frameworks";
     mkdir(outdir, 0755);
 
-    printf("Extracting to %s...\n", outdir);
-    int result = extract(cache, outdir, progress_cb);
-    printf("\nExtraction %s (result=%d)\n", result == 0 ? "succeeded" : "failed", result);
+    printf("\n--- Extracting from %s ---\n", cache);
+    printf("  Output: %s\n", outdir);
+    fflush(stdout);
 
-    if (result == 0) {
-        printf("\nTarget dylibs:\n");
-        system("find /tmp/dsc_out -name 'ImageIO' -o -name 'CoreText' -o -name 'CoreGraphics' "
-               "-o -name 'AudioToolboxCore' -o -name 'libTIFF.dylib' -o -name 'libJP2.dylib' "
-               "-o -name 'AppleJPEG' 2>/dev/null | while read f; do echo \"  $f ($(stat -f%z \"$f\") bytes)\"; done");
+    int result = extract(cache, outdir, progress_cb);
+    fprintf(stderr, "\n");
+    printf("  Result: %d (total dylibs: %u)\n", result, g_total);
+
+    /* 4. List target frameworks */
+    printf("\n--- Target frameworks ---\n");
+    const char *targets[] = {
+        "ImageIO", "CoreText", "CoreGraphics",
+        "AudioToolboxCore", "AppleJPEG",
+        "libTIFF.dylib", "libJP2.dylib", "libJPEG.dylib",
+        "libPng.dylib", "libGIF.dylib",
+        NULL
+    };
+    char cmd[1024];
+    for (int i = 0; targets[i]; i++) {
+        snprintf(cmd, sizeof(cmd),
+            "find %s -name '%s' -exec stat -f '  %%N (%%z bytes)' {} \\; 2>/dev/null",
+            outdir, targets[i]);
+        system(cmd);
     }
+
+    /* 5. Verify with nm */
+    printf("\n--- Symbol verification ---\n");
+    snprintf(cmd, sizeof(cmd),
+        "find %s -name 'ImageIO' -exec nm -U {} \\; 2>/dev/null | "
+        "grep -c '' 2>/dev/null", outdir);
+    printf("ImageIO symbols: ");
+    fflush(stdout);
+    system(cmd);
 
     dlclose(handle);
     return 0;
