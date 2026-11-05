@@ -19,8 +19,8 @@ for dsc in \
     fi
 done
 
-if [ -z "$DSC" ]; then
-    echo "No shared cache found. Trying dyld_shared_cache_util..."
+if [ -z "$DSC" ] || ! command -v dyld_shared_cache_util >/dev/null 2>&1; then
+    echo "No extractor available. Using runtime extraction..."
     # List available caches
     find /System -name "dyld_shared_cache*" -ls 2>/dev/null | head -10
     find /private/var/db/dyld -name "dyld_shared_cache*" -ls 2>/dev/null | head -10
