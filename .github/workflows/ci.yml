@@ -9,8 +9,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: disassembly probe
+      - name: parser extraction
         run: |
-          clang -arch arm64e -framework Security -framework CoreFoundation -Wno-deprecated-declarations -ldl -o /tmp/dp disasm_probe.m
-          /tmp/dp 2>&1
+          clang -arch arm64e -framework Foundation -framework ImageIO -framework CoreText \
+            -framework CoreGraphics -framework AudioToolbox -framework CoreFoundation \
+            -ldl -o /tmp/ep extract_parsers.m
+          /tmp/ep 2>&1
         continue-on-error: true
