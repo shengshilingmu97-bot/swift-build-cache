@@ -1,5 +1,5 @@
 ﻿/*
- * zone_probe.m — Determine CFData allocation zone vs malloc default zone
+ * zone_probe.m — Magazine allocator reclamation analysis
  * benchmark-id: LRK-7
  */
 #include <CoreFoundation/CoreFoundation.h>
@@ -9,106 +9,107 @@
 #include <stdlib.h>
 #include <string.h>
 
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 int main(void) {
-    printf("=== malloc zone analysis ===\n\n");
+    printf("=== Magazine allocator reclamation (LRK-7) ===\n\n");
 
-    /* Default zone */
-    malloc_zone_t *default_zone = malloc_default_zone();
-    printf("malloc_default_zone() = %p (%s)\n",
-           default_zone, malloc_get_zone_name(default_zone));
-
-    /* All zones */
-    unsigned zone_count = 0;
-    malloc_zone_t **zones = NULL;
-    kern_return_t kr = malloc_get_all_zones(mach_task_self(),
-        NULL, (vm_address_t **)&zones, &zone_count);
-    if (kr == KERN_SUCCESS) {
-        printf("\nAll zones (%u):\n", zone_count);
-        for (unsigned i = 0; i < zone_count; i++) {
-            printf("  [%u] %p: %s\n", i, zones[i],
-                   malloc_get_zone_name(zones[i]) ?: "?");
-        }
-    }
-
-    /* CFData allocation */
     const char payload[] = "SEC-TX-01-TARGET-FLAG-UAF";
-    CFDataRef data = CFDataCreate(kCFAllocatorDefault,
-        (const UInt8 *)payload, sizeof(payload) - 1);
+    size_t plen = sizeof(payload) - 1;
 
-    size_t data_size = malloc_size(data);
-    malloc_zone_t *data_zone = malloc_zone_from_ptr(data);
+    /* Test 1: How many malloc(size) needed to reclaim CFData slot? */
+    printf("--- Test 1: CFData free → malloc scan (2000) ---\n");
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+    size_t sz = malloc_size(data);
+    void *freed = (void *)data;
+    printf("CFData=%p size=%zu\n", freed, sz);
+    CFRelease(data);
 
-    printf("\nCFDataCreate result:\n");
-    printf("  addr = %p\n", data);
-    printf("  malloc_size = %zu\n", data_size);
-    printf("  zone = %p (%s)\n", data_zone,
-           data_zone ? malloc_get_zone_name(data_zone) : "NULL");
-    printf("  == default_zone? %s\n",
-           data_zone == default_zone ? "YES" : "NO");
+    void *bufs[2000];
+    int hit = -1;
+    for (int i = 0; i < 2000; i++) {
+        bufs[i] = malloc(sz);
+        if (bufs[i] == freed) { hit = i; break; }
+    }
+    printf("malloc scan: %s (at %d)\n", hit >= 0 ? "FOUND" : "NOT FOUND", hit);
+    for (int i = 0; i <= (hit >= 0 ? hit : 1999); i++) free(bufs[i]);
 
-    /* malloc allocation of same size */
-    void *m = malloc(data_size);
-    malloc_zone_t *m_zone = malloc_zone_from_ptr(m);
-    printf("\nmalloc(%zu) result:\n", data_size);
-    printf("  addr = %p\n", m);
-    printf("  zone = %p (%s)\n", m_zone,
-           m_zone ? malloc_get_zone_name(m_zone) : "NULL");
-    printf("  == data_zone? %s\n",
-           m_zone == data_zone ? "YES (same zone)" : "NO (DIFFERENT zone!)");
-
-    /* CFAllocatorAllocate of same size */
-    void *ca = CFAllocatorAllocate(kCFAllocatorDefault, data_size, 0);
-    malloc_zone_t *ca_zone = malloc_zone_from_ptr(ca);
-    printf("\nCFAllocatorAllocate(default, %zu) result:\n", data_size);
-    printf("  addr = %p\n", ca);
-    printf("  zone = %p (%s)\n", ca_zone,
-           ca_zone ? malloc_get_zone_name(ca_zone) : "NULL");
-    printf("  == data_zone? %s\n",
-           ca_zone == data_zone ? "YES (same zone)" : "NO (DIFFERENT zone!)");
-
-    /* malloc_zone_malloc in data's zone */
-    if (data_zone) {
-        void *zm = malloc_zone_malloc(data_zone, data_size);
-        malloc_zone_t *zm_zone = malloc_zone_from_ptr(zm);
-        printf("\nmalloc_zone_malloc(data_zone, %zu) result:\n", data_size);
-        printf("  addr = %p\n", zm);
-        printf("  zone = %p (%s)\n", zm_zone,
-               zm_zone ? malloc_get_zone_name(zm_zone) : "NULL");
-        printf("  == data_zone? %s\n",
-               zm_zone == data_zone ? "YES" : "NO");
-
-        /* Free data, then zone_malloc → should get same addr (LIFO) */
-        void *data_addr = (void *)data;
-        CFRelease(data);
-        printf("\nAfter CFRelease(data) at %p:\n", data_addr);
-
-        void *reclaim = malloc_zone_malloc(data_zone, data_size);
-        printf("  malloc_zone_malloc(data_zone, %zu) = %p\n",
-               data_size, reclaim);
-        printf("  == freed addr? %s *** %s ***\n",
-               reclaim == data_addr ? "YES" : "NO",
-               reclaim == data_addr ? "LIFO WORKS" : "LIFO FAILED");
-
-        if (reclaim != data_addr) {
-            /* Try a few more */
-            printf("  Trying more allocations...\n");
-            for (int i = 0; i < 10; i++) {
-                void *try = malloc_zone_malloc(data_zone, data_size);
-                if (try == data_addr) {
-                    printf("  Attempt %d: %p == %p MATCH!\n",
-                           i + 1, try, data_addr);
-                    break;
-                }
-                printf("  Attempt %d: %p\n", i + 1, try);
-            }
-        }
-
-        free(reclaim);
-        free(zm);
+    /* Test 2: CFDataCreate → CFRelease → CFDataCreate (same API path) */
+    printf("\n--- Test 2: CFDataCreate round-trip x5 ---\n");
+    for (int t = 0; t < 5; t++) {
+        CFDataRef d1 = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+        void *a1 = (void *)d1;
+        CFRelease(d1);
+        CFDataRef d2 = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+        printf("  [%d] d1=%p d2=%p %s\n", t, a1, (void*)d2, a1==(void*)d2 ? "MATCH***" : "miss");
+        CFRelease(d2);
     }
 
-    free(m);
-    CFAllocatorDeallocate(kCFAllocatorDefault, ca);
+    /* Test 3: malloc → free → malloc (pure LIFO) */
+    printf("\n--- Test 3: malloc round-trip x5 ---\n");
+    for (int t = 0; t < 5; t++) {
+        void *m1 = malloc(sz);
+        free(m1);
+        void *m2 = malloc(sz);
+        printf("  [%d] m1=%p m2=%p %s\n", t, m1, m2, m1==m2 ? "MATCH***" : "miss");
+        free(m2);
+    }
+
+    /* Test 4: CFAllocatorAllocate round-trip */
+    printf("\n--- Test 4: CFAllocatorAllocate round-trip x5 ---\n");
+    for (int t = 0; t < 5; t++) {
+        void *a1 = CFAllocatorAllocate(kCFAllocatorDefault, sz, 0);
+        CFAllocatorDeallocate(kCFAllocatorDefault, a1);
+        void *a2 = CFAllocatorAllocate(kCFAllocatorDefault, sz, 0);
+        printf("  [%d] a1=%p a2=%p %s\n", t, a1, a2, a1==a2 ? "MATCH***" : "miss");
+        CFAllocatorDeallocate(kCFAllocatorDefault, a2);
+    }
+
+    /* Test 5: Drain then CFDataCreate→free→malloc */
+    printf("\n--- Test 5: Drain 1000 + CFData→free→malloc ---\n");
+    void *drain[1000];
+    for (int d = 0; d < 1000; d++) drain[d] = malloc(sz);
+    data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+    freed = (void *)data;
+    printf("After drain: CFData=%p\n", freed);
+    CFRelease(data);
+    void *lifo = malloc(sz);
+    printf("malloc=%p match=%s\n", lifo, lifo==freed ? "YES***" : "NO");
+    free(lifo);
+    for (int d = 0; d < 1000; d++) free(drain[d]);
+
+    /* Test 6: Drain with CFDataCreate (same alloc path) */
+    printf("\n--- Test 6: Drain with CFDataCreate x200 → victim → free → CFDataCreate ---\n");
+    CFDataRef cf_drain[200];
+    for (int d = 0; d < 200; d++)
+        cf_drain[d] = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+    data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+    freed = (void *)data;
+    printf("After CF drain: victim=%p\n", freed);
+    CFRelease(data);
+    CFDataRef reclaim = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+    printf("CFDataCreate=%p match=%s\n", (void*)reclaim, (void*)reclaim==freed ? "YES***" : "NO");
+    CFRelease(reclaim);
+    for (int d = 0; d < 200; d++) CFRelease(cf_drain[d]);
+
+    /* Test 7: Batch free-then-alloc (free N, then alloc N, check overlap) */
+    printf("\n--- Test 7: Allocate 100 CFData, free all, re-allocate, count overlaps ---\n");
+    CFDataRef batch1[100], batch2[100];
+    void *addrs1[100];
+    for (int i = 0; i < 100; i++) {
+        batch1[i] = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+        addrs1[i] = (void *)batch1[i];
+    }
+    for (int i = 0; i < 100; i++) CFRelease(batch1[i]);
+    int overlaps = 0;
+    for (int i = 0; i < 100; i++) {
+        batch2[i] = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)payload, plen);
+        for (int j = 0; j < 100; j++) {
+            if ((void *)batch2[i] == addrs1[j]) { overlaps++; break; }
+        }
+    }
+    printf("Overlaps: %d / 100 (%.0f%%)\n", overlaps, overlaps * 100.0 / 100);
+    for (int i = 0; i < 100; i++) CFRelease(batch2[i]);
 
     printf("\n=== DONE ===\n");
     return 0;
