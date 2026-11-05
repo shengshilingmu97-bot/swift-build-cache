@@ -1,65 +1,134 @@
 #!/bin/bash
-# Extract key framework dylibs from shared cache for offline analysis
+# Extract dylibs from dyld shared cache using dsc_extractor API
 # benchmark-id: LRK-7
 
 set -e
-
 OUT=/tmp/dylib_extract
 mkdir -p "$OUT"
 
-echo "=== Copying framework dylibs ==="
-
-# Direct copy from framework paths (these are symlinks into shared cache on macOS 27)
-FRAMEWORKS=(
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libTIFF.dylib"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJP2.dylib"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJPEG.dylib"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libPng.dylib"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libGIF.dylib"
-    "/System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libRadiance.dylib"
-    "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText"
-    "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
-    "/System/Library/PrivateFrameworks/AudioToolboxCore.framework/Versions/A/AudioToolboxCore"
-    "/System/Library/PrivateFrameworks/AppleJPEG.framework/Versions/A/AppleJPEG"
-)
-
-for fw in "${FRAMEWORKS[@]}"; do
-    name=$(basename "$fw")
-    if [ -f "$fw" ]; then
-        cp "$fw" "$OUT/$name"
-        echo "  OK: $name ($(stat -f%z "$fw") bytes)"
-    else
-        echo "  SKIP: $name (not found at $fw)"
-        # Try dyld_shared_cache_util extract
-        DSC="/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e"
-        if [ -f "$DSC" ] && command -v dyld_shared_cache_util >/dev/null 2>&1; then
-            echo "  Trying dyld_shared_cache_util..."
-            dyld_shared_cache_util -extract "$OUT/dsc_extract" "$DSC" 2>/dev/null || true
-        fi
+echo "=== Finding shared cache ==="
+# macOS 27 shared cache locations
+for dsc in \
+    /System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e \
+    /System/Library/dyld/dyld_shared_cache_arm64e \
+    /private/var/db/dyld/dyld_shared_cache_arm64e; do
+    if [ -f "$dsc" ]; then
+        echo "Found: $dsc ($(stat -f%z "$dsc") bytes)"
+        DSC="$dsc"
+        break
     fi
 done
 
-echo ""
-echo "=== Extracted files ==="
-ls -la "$OUT/" 2>/dev/null
-echo ""
-echo "=== File types ==="
-file "$OUT"/* 2>/dev/null
+if [ -z "$DSC" ]; then
+    echo "No shared cache found. Trying dyld_shared_cache_util..."
+    # List available caches
+    find /System -name "dyld_shared_cache*" -ls 2>/dev/null | head -10
+    find /private/var/db/dyld -name "dyld_shared_cache*" -ls 2>/dev/null | head -10
 
-# Also get symbol lists for the key parsers
-echo ""
-echo "=== ImageIO symbol grep (parser-related) ==="
-nm -U "$OUT/ImageIO" 2>/dev/null | grep -iE "jpeg|tiff|png|heif|webp|decode|parse|read.*header|scan.*line" | head -50
+    # Alternative: use the runtime extraction via C program
+    echo ""
+    echo "=== Extracting via runtime dlopen + copy ==="
 
-echo ""
-echo "=== CoreText symbol grep (font parsing) ==="
-nm -U "$OUT/CoreText" 2>/dev/null | grep -iE "font|glyph|cmap|table|sfnt|open.?type|true.?type|read.*table" | head -50
+    cat > /tmp/extract_runtime.c << 'CEOF'
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
-echo ""
-echo "=== CoreGraphics symbol grep (PDF parsing) ==="
-nm -U "$OUT/CoreGraphics" 2>/dev/null | grep -iE "pdf|icc|color.*space|scan|parse|stream" | head -50
+int main(void) {
+    const char *targets[] = {
+        "ImageIO", "CoreText", "CoreGraphics",
+        "AudioToolboxCore", "AppleJPEG",
+        "libTIFF", "libJP2", "libJPEG", "libPng", "libGIF",
+        NULL
+    };
 
-echo ""
-echo "=== AudioToolboxCore symbol grep (codec) ==="
-nm -U "$OUT/AudioToolboxCore" 2>/dev/null | grep -iE "aac|alac|flac|mp3|decode|codec|parse|frame" | head -50
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (!name) continue;
+
+        int match = 0;
+        for (int t = 0; targets[t]; t++) {
+            if (strstr(name, targets[t])) { match = 1; break; }
+        }
+        if (!match) continue;
+
+        const struct mach_header_64 *mh =
+            (const struct mach_header_64 *)_dyld_get_image_header(i);
+        if (!mh || mh->magic != MH_MAGIC_64) continue;
+
+        /* Calculate total mapped size from segments */
+        size_t total = 0;
+        const uint8_t *p = (const uint8_t *)(mh + 1);
+        for (uint32_t c = 0; c < mh->ncmds; c++) {
+            const struct load_command *lc = (void *)p;
+            if (lc->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg = (void *)p;
+                size_t end = seg->vmaddr + seg->vmsize;
+                if (end > total) total = end;
+            }
+            p += lc->cmdsize;
+        }
+
+        /* Extract basename */
+        const char *bn = strrchr(name, '/');
+        bn = bn ? bn + 1 : name;
+
+        char outpath[256];
+        snprintf(outpath, sizeof(outpath), "/tmp/dylib_extract/%s.dylib", bn);
+
+        /* Write the mapped region */
+        int fd = open(outpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) { perror(outpath); continue; }
+
+        /* Write header + load commands + __TEXT */
+        p = (const uint8_t *)(mh + 1);
+        size_t text_size = 0;
+        for (uint32_t c = 0; c < mh->ncmds; c++) {
+            const struct load_command *lc = (void *)p;
+            if (lc->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg = (void *)p;
+                if (strcmp(seg->segname, "__TEXT") == 0) {
+                    text_size = seg->vmsize;
+                }
+            }
+            p += lc->cmdsize;
+        }
+
+        /* Write the __TEXT segment (includes header + code) */
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        size_t write_size = text_size > 0 ? text_size : 65536;
+        ssize_t written = write(fd, (const void *)mh, write_size);
+        close(fd);
+
+        printf("  %s: %zd bytes written (%s)\n", bn, written, outpath);
+    }
+    return 0;
+}
+CEOF
+
+    clang -arch arm64e -framework Foundation -framework ImageIO \
+          -framework CoreText -framework CoreGraphics \
+          -framework AudioToolbox \
+          -o /tmp/extract_runtime /tmp/extract_runtime.c
+    /tmp/extract_runtime
+
+    echo ""
+    echo "=== Extracted files ==="
+    ls -la "$OUT/"
+    exit 0
+fi
+
+echo "=== Extracting from $DSC ==="
+# Use dyld_shared_cache_util if available
+if command -v dyld_shared_cache_util >/dev/null 2>&1; then
+    dyld_shared_cache_util -extract "$OUT/full_extract" "$DSC"
+    echo "Full extraction done"
+else
+    echo "dyld_shared_cache_util not found, using runtime extraction..."
+fi
