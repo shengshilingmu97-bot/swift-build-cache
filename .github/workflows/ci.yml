@@ -9,16 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sw_vers && uname -m
-      - name: extract dylibs + symbols
+      - name: otool symbol analysis
         run: |
-          chmod +x extract_dylibs.sh
-          bash extract_dylibs.sh 2>&1
+          chmod +x otool_analysis.sh
+          bash otool_analysis.sh 2>&1
         continue-on-error: true
-
-      - name: upload dylibs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos27-dylibs
-          path: /tmp/dylib_extract/
-          if-no-files-found: warn
