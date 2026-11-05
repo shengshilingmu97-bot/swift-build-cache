@@ -1,9 +1,10 @@
-/*
+﻿/*
  * zone_probe.m — Determine CFData allocation zone vs malloc default zone
  * benchmark-id: LRK-7
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <malloc/malloc.h>
+#include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
