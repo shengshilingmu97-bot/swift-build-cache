@@ -273,7 +273,7 @@ static void probe_objc_cache(void) {
 
     /* Try to find IMPs in the class's cache (runtime internals) */
     printf("\nClass internal layout (first 16 qwords from class pointer):\n");
-    uint64_t *cls_raw = (uint64_t *)cls;
+    uint64_t *cls_raw = (uint64_t *)(__bridge void *)cls;
     for (int i = 0; i < 16; i++) {
         uint64_t val = cls_raw[i];
         uint64_t stripped = strip_pac(val);
