@@ -1,4 +1,4 @@
-﻿name: Build and Test
+name: Build and Test
 on:
   push:
   workflow_dispatch:
@@ -26,8 +26,9 @@ jobs:
             "CoreGraphics.framework/Versions/A/CoreGraphics"
             "AudioToolboxCore.framework/Versions/A/AudioToolboxCore"
             "AppleJPEG.framework/Versions/A/AppleJPEG"
+            "Foundation.framework/Versions/C/Foundation"
           )
-          LIBS=("libTIFF.dylib" "libJP2.dylib" "libJPEG.dylib" "libPng.dylib" "libGIF.dylib")
+          LIBS=("libTIFF.dylib" "libJP2.dylib" "libJPEG.dylib" "libPng.dylib" "libGIF.dylib" "libxslt.1.dylib" "libxml2.2.dylib")
 
           for t in "${TARGETS[@]}"; do
             F=$(find /tmp/dsc_output -path "*/$t" -type f 2>/dev/null | head -1)
